@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include "raylib.h"
+#include <math.h>
 
 #define MAX_V 15
 #define INF 999999
@@ -115,5 +117,48 @@ int main() {
     }
 
     fclose(file);
+
+    // 2. GUI Initialization (Milestone 2 Requirement)
+    const int screenWidth = 800;
+    const int screenHeight = 600;
+    InitWindow(screenWidth, screenHeight, "Graph Visualization - Milestone 2");
+    SetTargetFPS(60);
+
+    // 3. Pre-calculate node positions for circular layout
+    // Using trigonometric functions to distribute nodes evenly
+    Vector2 positions[MAX_V];
+    Vector2 center = { (float)screenWidth / 2, (float)screenHeight / 2 };
+    float layoutRadius = 220.0f;
+
+    for (int i = 0; i < n; i++) {
+        float angle = i * (360.0f / n) * DEG2RAD;
+        positions[i].x = center.x + layoutRadius * cosf(angle);
+        positions[i].y = center.y + layoutRadius * sinf(angle);
+    }
+
+    // 4. Main Application Loop
+    while (!WindowShouldClose()) {
+        // Rendering
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        // TODO: Implement edge drawing (arrows) and weight display based on city.matrix
+
+
+        // Draw nodes (vertices) as circular elements
+        for (int i = 0; i < n; i++) {
+            // Render circle
+            DrawCircleV(positions[i], 30, SKYBLUE);
+            DrawCircleLines(positions[i].x, positions[i].y, 30, BLUE);
+
+            // Render node ID centered within the circle
+            DrawText(TextFormat("%d", i), positions[i].x - 8, positions[i].y - 12, 24, WHITE);
+        }
+
+        EndDrawing();
+    }
+
+    // 5. De-initialization
+    CloseWindow();
     return 0;
 }
