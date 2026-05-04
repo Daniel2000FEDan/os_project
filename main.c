@@ -103,6 +103,26 @@ void run_dijkstra(City* c, int start, int end) {
     }
 }
 
+// shift edge weights closer to the source (42%) to prevent any line intersections
+void DrawWeight(Vector2 start, Vector2 end, int weight) {
+    // 42% from the start point keeps the label safely away from the center chaos
+    float ratio = 0.42f;
+    Vector2 pos = {
+        start.x + (end.x - start.x) * ratio,
+        start.y + (end.y - start.y) * ratio
+    };
+
+    const char* label = TextFormat("%d", weight);
+    int fontSize = 20;
+    int textWidth = MeasureText(label, fontSize);
+
+    // render background cutout to hide the edge line
+    DrawCircleV(pos, 14, GetColor(0xF5F5F5FF));
+
+    // center text perfectly inside the cutout
+    DrawText(label, (int)(pos.x - textWidth / 2.0f), (int)(pos.y - fontSize / 2.0f), fontSize, DARKGRAY);
+}
+
 int main() {
     FILE* file = fopen("input.txt", "r");
     if (!file) {
@@ -133,13 +153,13 @@ int main() {
 
     fclose(file);
 
-    // 2. GUI Initialization (Milestone 2 Requirement)
+    // GUI Initialization
     const int screenWidth = 800;
     const int screenHeight = 600;
     InitWindow(screenWidth, screenHeight, "Graph Visualization - Milestone 2");
     SetTargetFPS(60);
 
-    // 3. Pre-calculate node positions for circular layout
+    // Pre-calculate node positions for circular layout
     // Using trigonometric functions to distribute nodes evenly
     Vector2 positions[MAX_V];
     Vector2 center = { (float)screenWidth / 2, (float)screenHeight / 2 };
@@ -151,33 +171,36 @@ int main() {
         positions[i].y = center.y + layoutRadius * sinf(angle);
     }
 
-    // 4. Main Application Loop
+
     while (!WindowShouldClose()) {
-        // Rendering
         BeginDrawing();
-        ClearBackground(RAYWHITE);
+        ClearBackground(GetColor(0xF5F5F5FF)); // clean light theme
+
+        // render edges
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                 if (city.matrix[i][j] != INF && i != j) {
-                    DrawArrow(positions[i], positions[j], 30, DARKGRAY);
+                    DrawArrow(positions[i], positions[j], 30, GRAY);
+                    DrawWeight(positions[i], positions[j], city.matrix[i][j]);
                 }
             }
         }
 
-        // Draw nodes (vertices) as circular elements
+        // render nodes
         for (int i = 0; i < n; i++) {
-            // Render circle
             DrawCircleV(positions[i], 30, SKYBLUE);
-            DrawCircleLines(positions[i].x, positions[i].y, 30, BLUE);
+            DrawCircleLines((int)positions[i].x, (int)positions[i].y, 30, BLUE);
 
-            // Render node ID centered within the circle
-            DrawText(TextFormat("%d", i), positions[i].x - 8, positions[i].y - 12, 24, WHITE);
+            const char* idText = TextFormat("%d", i);
+            int fontSize = 26;
+            int textWidth = MeasureText(idText, fontSize);
+
+            // dynamic centering: center_pos - half_width
+            DrawText(idText, (int)positions[i].x - textWidth/2, (int)positions[i].y - fontSize/2, fontSize, WHITE);
         }
 
         EndDrawing();
     }
-
-    // 5. De-initialization
     CloseWindow();
     return 0;
 }
