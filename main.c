@@ -12,6 +12,21 @@ typedef struct {
     int matrix[MAX_V][MAX_V];
 } City;
 
+// calculate arrow points with offset to avoid node overlap
+void DrawArrow(Vector2 start, Vector2 end, float radius, Color color) {
+    float angle = atan2f(end.y - start.y, end.x - start.x);
+    float edgeOffset = radius + 12.0f; // distance from node center
+
+    // start and end points outside node circles
+    Vector2 p1 = { start.x + radius * cosf(angle), start.y + radius * sinf(angle) };
+    Vector2 p2 = { end.x - edgeOffset * cosf(angle), end.y - edgeOffset * sinf(angle) };
+
+    DrawLineEx(p1, p2, 1.8f, color);
+
+    // arrow head geometry
+    DrawPoly(p2, 3, 10, angle * RAD2DEG, color);
+}
+
 // Initialize graph: self-loops = 0, others = INF
 void init_city(City* c, int v) {
     c->v_count = v;
@@ -141,9 +156,13 @@ int main() {
         // Rendering
         BeginDrawing();
         ClearBackground(RAYWHITE);
-
-        // TODO: Implement edge drawing (arrows) and weight display based on city.matrix
-
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                if (city.matrix[i][j] != INF && i != j) {
+                    DrawArrow(positions[i], positions[j], 30, DARKGRAY);
+                }
+            }
+        }
 
         // Draw nodes (vertices) as circular elements
         for (int i = 0; i < n; i++) {
