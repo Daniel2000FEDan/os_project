@@ -19,7 +19,11 @@ if(NOT raylib_FOUND)
 endif()
 
 # 3. Define the executable and the source file
-add_executable(os_project main.c)
+add_executable(os_project
+        graph.h
+        graph.c
+        dijkstra.c
+        sim.c)
 
 # 4. Link the raylib library to the project
 if(raylib_FOUND)
