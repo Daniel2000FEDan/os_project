@@ -31,18 +31,15 @@ void print_path(int parent[], int j) {
 
 // Standard Dijkstra's algorithm using the adjacency matrix
 void run_dijkstra(City* c, int start, int end) {
-    // Handle edge case where source and destination are the same
     if (start == end) {
         printf("%d\n%d\n", start, 0);
         return;
     }
 
-    // Static arrays used instead of dynamic memory to prevent leaks
     int dist[MAX_V];
     bool visited[MAX_V];
     int parent[MAX_V];
 
-    // Initialize algorithm states
     for (int i = 0; i < c->v_count; i++) {
         dist[i] = INF;
         visited[i] = false;
@@ -51,23 +48,17 @@ void run_dijkstra(City* c, int start, int end) {
 
     dist[start] = 0;
 
-    // Find shortest path for all vertices
     for (int count = 0; count < c->v_count - 1; count++) {
         int min = INF, u = -1;
-        
-        // Pick the minimum distance vertex from the set of unvisited vertices
         for (int v = 0; v < c->v_count; v++) {
             if (!visited[v] && dist[v] <= min) {
                 min = dist[v], u = v;
             }
         }
 
-        // If no reachable vertex is found, or we reached the target
         if (u == -1 || u == end) break;
-        
         visited[u] = true;
 
-        // Update dist value of the adjacent vertices of the picked vertex
         for (int v = 0; v < c->v_count; v++) {
             if (!visited[v] && c->matrix[u][v] != INF &&
                 dist[u] + c->matrix[u][v] < dist[v]) {
@@ -77,11 +68,82 @@ void run_dijkstra(City* c, int start, int end) {
         }
     }
 
-    // Output formatting according to requirements
     if (dist[end] == INF) {
         printf("No path found\n");
     } else {
         print_path(parent, end);
         printf("\n%d\n", dist[end]);
     }
+}
+
+// Helper function to recursively build the path array
+void build_path_array(int parent[], int j, Path* p) {
+    if (parent[j] == -1) {
+        p->nodes[p->count++] = j;
+        return;
+    }
+    build_path_array(parent, parent[j], p);
+    p->nodes[p->count++] = j;
+}
+
+// Computes Dijkstra and returns the path data structure for the simulator
+Path get_shortest_path(City* c, int start, int end) {
+    Path p;
+    p.count = 0;
+    p.total_weight = 0;
+    p.found = false;
+
+    // Handle edge case: start and end are the same node
+    if (start == end) {
+        p.nodes[p.count++] = start;
+        p.found = true;
+        return p;
+    }
+
+    int dist[MAX_V];
+    bool visited[MAX_V];
+    int parent[MAX_V];
+
+    // Initialize arrays
+    for (int i = 0; i < c->v_count; i++) {
+        dist[i] = INF;
+        visited[i] = false;
+        parent[i] = -1;
+    }
+
+    dist[start] = 0;
+
+    // Main Dijkstra loop
+    for (int count = 0; count < c->v_count - 1; count++) {
+        int min = INF, u = -1;
+
+        // Find minimum distance vertex
+        for (int v = 0; v < c->v_count; v++) {
+            if (!visited[v] && dist[v] <= min) {
+                min = dist[v], u = v;
+            }
+        }
+
+        // Break if no reachable vertex or target is reached
+        if (u == -1 || u == end) break;
+        visited[u] = true;
+
+        // Update distances for adjacent vertices
+        for (int v = 0; v < c->v_count; v++) {
+            if (!visited[v] && c->matrix[u][v] != INF &&
+                dist[u] + c->matrix[u][v] < dist[v]) {
+                dist[v] = dist[u] + c->matrix[u][v];
+                parent[v] = u;
+            }
+        }
+    }
+
+    // If a path was found, build the array
+    if (dist[end] != INF) {
+        p.found = true;
+        p.total_weight = dist[end];
+        build_path_array(parent, end, &p);
+    }
+
+    return p;
 }
