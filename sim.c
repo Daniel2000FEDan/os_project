@@ -3,6 +3,14 @@
 #include "raylib.h"
 #include "graph.h"
 
+// State machine definitions for animation engine
+typedef enum {
+    STATE_IDLE,
+    STATE_MOVING,
+    STATE_WAITING,
+    STATE_FINISHED
+} AnimState;
+
 // Draws an arrow between two nodes, adjusting start/end points to avoid node overlap
 void DrawArrow(Vector2 start, Vector2 end, float radius, Color color) {
     float angle = atan2f(end.y - start.y, end.x - start.x);
@@ -91,13 +99,71 @@ int main(int argc, char *argv[]) {
     bool isAnimating = false;
     Rectangle playBtn = { 20, 20, 100, 40 };
 
+    // Animation core variables
+    AnimState animState = STATE_IDLE;
+    int pathIdx = 0;
+    double stateStartTime = 0.0;
+    Vector2 entityPos = {0, 0};
+    bool entityInitialized = false;
+
+    // Initialize entity at the start node
+    if (has_query && path.found) {
+        entityPos = positions[path.nodes[0]];
+        entityInitialized = true;
+    }
+
     while (!WindowShouldClose()) {
         // Handle button logic
         Vector2 mousePoint = GetMousePosition();
         bool btnHover = CheckCollisionPointRec(mousePoint, playBtn);
 
         if (btnHover && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-            isAnimating = !isAnimating; // Toggle Play/Stop state
+            isAnimating = !isAnimating; // Toggle animation state
+
+            // Initialize timer if starting from idle
+            if (isAnimating && animState == STATE_IDLE && path.found && path.count > 1) {
+                animState = STATE_MOVING;
+                stateStartTime = GetTime();
+            }
+        }
+
+        // ANIMATION ENGINE MATH
+        if (isAnimating && animState != STATE_FINISHED && animState != STATE_IDLE && path.found) {
+            if (animState == STATE_WAITING) {
+                // Pause for 1 full second at intermediate nodes
+                if (GetTime() - stateStartTime >= 1.0) {
+                    animState = STATE_MOVING;
+                    stateStartTime = GetTime();
+                }
+            }
+            else if (animState == STATE_MOVING) {
+                int u = path.nodes[pathIdx];
+                int v = path.nodes[pathIdx + 1];
+                int W = city.matrix[u][v];
+
+                double elapsed = GetTime() - stateStartTime;
+
+                // Calculate discrete steps (300ms per weight unit)
+                int currentJump = (int)(elapsed / 0.3);
+
+                if (currentJump >= W) {
+                    // Reached the next node
+                    entityPos = positions[v];
+                    pathIdx++;
+
+                    if (pathIdx >= path.count - 1) {
+                        animState = STATE_FINISHED;
+                    } else {
+                        animState = STATE_WAITING;
+                        stateStartTime = GetTime(); // Start wait timer
+                    }
+                } else {
+                    // Interpolate position for current discrete jump
+                    float progress = (float)currentJump / W;
+                    entityPos.x = positions[u].x + (positions[v].x - positions[u].x) * progress;
+                    entityPos.y = positions[u].y + (positions[v].y - positions[u].y) * progress;
+                }
+            }
         }
 
         BeginDrawing();
@@ -124,11 +190,14 @@ int main(int argc, char *argv[]) {
             DrawText(idText, (int)positions[i].x - textWidth/2, (int)positions[i].y - fontSize/2, fontSize, WHITE);
         }
 
-        // 3. Draw moving entity (currently static at start node)
-        if (has_query && path.found) {
-            int startNode = path.nodes[0];
-            DrawCircleV(positions[startNode], 15, ORANGE);
-            DrawCircleLines((int)positions[startNode].x, (int)positions[startNode].y, 15, RED);
+        // 3. Draw moving entity using engine coordinates
+        if (entityInitialized) {
+            DrawCircleV(entityPos, 15, ORANGE);
+            DrawCircleLines((int)entityPos.x, (int)entityPos.y, 15, RED);
+        }// 3. Draw moving entity using engine coordinates
+        if (entityInitialized) {
+            DrawCircleV(entityPos, 15, ORANGE);
+            DrawCircleLines((int)entityPos.x, (int)entityPos.y, 15, RED);
         }
 
         // 4. Draw Play/Stop Button
@@ -138,6 +207,13 @@ int main(int argc, char *argv[]) {
         const char* btnText = isAnimating ? "STOP" : "PLAY";
         int btnTextWidth = MeasureText(btnText, 20);
         DrawText(btnText, playBtn.x + (playBtn.width - btnTextWidth) / 2, playBtn.y + 10, 20, BLACK);
+
+        // 5. Render destination message upon completion
+        if (animState == STATE_FINISHED) {
+            const char* msg = "DESTINATION REACHED!";
+            int msgWidth = MeasureText(msg, 30);
+            DrawText(msg, (screenWidth - msgWidth) / 2, 20, 30, DARKGREEN);
+        }
 
         EndDrawing();
     }
