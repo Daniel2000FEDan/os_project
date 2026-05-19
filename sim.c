@@ -2,6 +2,12 @@
 #include <math.h>
 #include "raylib.h"
 #include "graph.h"
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <stdlib.h>
+
+#define MAX_TRAVELERS 20
 
 // State machine definitions for animation engine
 typedef enum {
@@ -10,6 +16,24 @@ typedef enum {
     STATE_WAITING,
     STATE_FINISHED
 } AnimState;
+
+typedef struct {
+    int id;
+    int start;
+    int end;
+    Path path;
+    Color color;
+    pid_t pid;
+    AnimState animState;
+    int pathIdx;
+    double stateStartTime;
+    Vector2 entityPos;
+    bool active;
+} Traveler;
+
+Color travelerColors[] = { RED, PURPLE, GREEN, MAGENTA, MAROON, DARKBLUE };
+int numColors = 6;
+
 
 // Draws an arrow between two nodes, adjusting start/end points to avoid node overlap
 void DrawArrow(Vector2 start, Vector2 end, float radius, Color color) {
@@ -68,15 +92,30 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Read the query (start and end nodes) for the animation
-    int query_start, query_end;
-    bool has_query = (fscanf(file, "%d %d", &query_start, &query_end) == 2);
+    int num_travelers = 0;
+    Traveler travelers[MAX_TRAVELERS];
+
+    if (fscanf(file, "%d", &num_travelers) == 1) {
+        for (int i = 0; i < num_travelers && i < MAX_TRAVELERS; i++) {
+            travelers[i].id = i;
+            fscanf(file, "%d %d", &travelers[i].start, &travelers[i].end);
+
+            travelers[i].path = get_shortest_path(&city, travelers[i].start, travelers[i].end);
+
+            travelers[i].color = travelerColors[i % numColors];
+            travelers[i].animState = STATE_IDLE;
+            travelers[i].pathIdx = 0;
+            travelers[i].active = travelers[i].path.found;
+        }
+    }
     fclose(file);
 
-    // Fetch the shortest path data for the simulation
+    // Temporary fallback for legacy rendering logic
     Path path;
-    if (has_query) {
-        path = get_shortest_path(&city, query_start, query_end);
+    if (num_travelers > 0) {
+        path = travelers[0].path;
+    } else {
+        path.found = false;
     }
 
     const int screenWidth = 800;
@@ -107,7 +146,7 @@ int main(int argc, char *argv[]) {
     bool entityInitialized = false;
 
     // Initialize entity at the start node
-    if (has_query && path.found) {
+    if (num_travelers > 0 && path.found) {
         entityPos = positions[path.nodes[0]];
         entityInitialized = true;
     }
