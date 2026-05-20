@@ -22,5 +22,10 @@
 * **Run:** `./sim <file_name>`
 * **Implementation Description:** Added a moving entity that travels along the shortest path calculated by Dijkstra. The movement includes precise timings: a full 1-second wait at each intermediate node, and movement along edges divided into discrete steps based on the edge's weight (each step taking exactly 300ms). Included Play/Stop toggles and a final "Destination Reached" display.
 
+### Milestone 4: Concurrent Process Simulation
+* **Build:** `make milestone4 (or simply 'make')`
+* **Run:** `./sim <file_name>`
+* **Implementation Description:** Upgraded the simulation engine to support concurrent travelers. Each active entity now operates within its own dedicated child process using `fork()`. The main process coordinates synchronized animations and terminates children via Unix signals (`SIGTERM`) and `waitpid()` cleanup upon arrival. Added a global "ALL DESTINATIONS REACHED" status notification.
+
 ## Cleanup
 * **Clean build files:** `make clean`
