@@ -110,6 +110,31 @@ int main(int argc, char *argv[]) {
     }
     fclose(file);
 
+    //FORKING PROCESSES
+    for (int i = 0; i < num_travelers; i++) {
+        if (!travelers[i].active) continue;
+
+        pid_t pid = fork();
+
+        if (pid < 0) {
+            fprintf(stderr, "Fork failed for traveler %d\n", i);
+            exit(1);
+        }
+        else if (pid == 0) {
+            // Child process
+            printf("[%d] started\n", getpid());
+
+            while (1) {
+                pause();
+            }
+            exit(0);
+        }
+        else {
+            // Parent process
+            travelers[i].pid = pid;
+        }
+    }
+
     // Temporary fallback for legacy rendering logic
     Path path;
     if (num_travelers > 0) {
