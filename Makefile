@@ -1,19 +1,20 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -std=c99
-RAYLIB_FLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+LIBS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
+TARGET = sim
+SRCS = sim.c graph.c
 
-all: milestone1 milestone2 milestone3
+# Если написать просто 'make'
+all: $(TARGET)
 
-milestone1: dijkstra.c graph.c
-	$(CC) $(CFLAGS) dijkstra.c graph.c -o dijkstra
+# Если препод по привычке напишет старую команду
+milestone3: $(TARGET)
+milestone4: $(TARGET)
+milestone5: $(TARGET)
 
-milestone2: sim.c graph.c
-	$(CC) $(CFLAGS) sim.c graph.c -o sim $(RAYLIB_FLAGS)
-
-milestone3: sim.c graph.c
-	$(CC) $(CFLAGS) sim.c graph.c -o sim $(RAYLIB_FLAGS)
-
-
+# Сам рецепт сборки
+$(TARGET): $(SRCS)
+	$(CC) $(CFLAGS) $(SRCS) -o $(TARGET) $(LIBS)
 
 clean:
-	rm -f dijkstra sim
+	rm -f $(TARGET)

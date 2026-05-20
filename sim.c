@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <math.h>
 #include "raylib.h"
@@ -6,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <stdlib.h>
+#include <signal.h>
 
 #define MAX_TRAVELERS 20
 
@@ -135,14 +137,6 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    // Temporary fallback for legacy rendering logic
-    Path path;
-    if (num_travelers > 0) {
-        path = travelers[0].path;
-    } else {
-        path.found = false;
-    }
-
     const int screenWidth = 800;
     const int screenHeight = 600;
     InitWindow(screenWidth, screenHeight, "Graph Simulation");
@@ -163,17 +157,11 @@ int main(int argc, char *argv[]) {
     bool isAnimating = false;
     Rectangle playBtn = { 20, 20, 100, 40 };
 
-    // Animation core variables
-    AnimState animState = STATE_IDLE;
-    int pathIdx = 0;
-    double stateStartTime = 0.0;
-    Vector2 entityPos = {0, 0};
-    bool entityInitialized = false;
-
-    // Initialize entity at the start node
-    if (num_travelers > 0 && path.found) {
-        entityPos = positions[path.nodes[0]];
-        entityInitialized = true;
+    // Set initial positions for all travelers
+    for (int i = 0; i < num_travelers; i++) {
+        if (travelers[i].active && travelers[i].path.count > 0) {
+            travelers[i].entityPos = positions[travelers[i].path.nodes[0]];
+        }
     }
 
     while (!WindowShouldClose()) {
@@ -184,56 +172,60 @@ int main(int argc, char *argv[]) {
         if (btnHover && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             isAnimating = !isAnimating; // Toggle animation state
 
-            // Initialize timer if starting from idle
-            if (isAnimating && animState == STATE_IDLE && path.found && path.count > 1) {
-                animState = STATE_MOVING;
-                stateStartTime = GetTime();
+            if (isAnimating) {
+                for (int i = 0; i < num_travelers; i++) {
+                    if (travelers[i].active && travelers[i].animState == STATE_IDLE && travelers[i].path.count > 1) {
+                        travelers[i].animState = STATE_MOVING;
+                        travelers[i].stateStartTime = GetTime();
+                    }
+                }
             }
         }
 
         // ANIMATION ENGINE MATH
-        if (isAnimating && animState != STATE_FINISHED && animState != STATE_IDLE && path.found) {
-            if (animState == STATE_WAITING) {
-                // Pause for 1 full second at intermediate nodes
-                if (GetTime() - stateStartTime >= 1.0) {
-                    animState = STATE_MOVING;
-                    stateStartTime = GetTime();
-                }
-            }
-            else if (animState == STATE_MOVING) {
-                int u = path.nodes[pathIdx];
-                int v = path.nodes[pathIdx + 1];
-                int W = city.matrix[u][v];
-
-                double elapsed = GetTime() - stateStartTime;
-
-                // Calculate discrete steps (300ms per weight unit)
-                int currentJump = (int)(elapsed / 0.3);
-
-                if (currentJump >= W) {
-                    // Reached the next node
-                    entityPos = positions[v];
-                    pathIdx++;
-
-                    if (pathIdx >= path.count - 1) {
-                        animState = STATE_FINISHED;
-                    } else {
-                        animState = STATE_WAITING;
-                        stateStartTime = GetTime(); // Start wait timer
+        if (isAnimating) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (!travelers[i].active || travelers[i].animState == STATE_FINISHED || travelers[i].animState == STATE_IDLE) continue;
+                if (travelers[i].animState == STATE_WAITING) {
+                    if (GetTime() - travelers[i].stateStartTime >= 1.0) {
+                        travelers[i].animState = STATE_MOVING;
+                        travelers[i].stateStartTime = GetTime();
                     }
-                } else {
-                    // Interpolate position for current discrete jump
-                    float progress = (float)currentJump / W;
-                    entityPos.x = positions[u].x + (positions[v].x - positions[u].x) * progress;
-                    entityPos.y = positions[u].y + (positions[v].y - positions[u].y) * progress;
+                }
+                else if (travelers[i].animState == STATE_MOVING) {
+                    int u = travelers[i].path.nodes[travelers[i].pathIdx];
+                    int v = travelers[i].path.nodes[travelers[i].pathIdx + 1];
+                    int W = city.matrix[u][v];
+                    double elapsed = GetTime() - travelers[i].stateStartTime;
+
+                    int currentJump = (int)(elapsed / 0.3);
+
+                    if (currentJump >= W) {
+                        travelers[i].entityPos = positions[v];
+                        travelers[i].pathIdx++;
+
+                        if (travelers[i].pathIdx >= travelers[i].path.count - 1) {
+                            travelers[i].animState = STATE_FINISHED;
+                            // Send signal to terminate the child process
+                            kill(travelers[i].pid, SIGTERM);
+                        } else {
+                            travelers[i].animState = STATE_WAITING;
+                            travelers[i].stateStartTime = GetTime();
+                        }
+                    } else {
+                        float progress = (float)currentJump / W;
+                        travelers[i].entityPos.x = positions[u].x + (positions[v].x - positions[u].x) * progress;
+                        travelers[i].entityPos.y = positions[u].y + (positions[v].y - positions[u].y) * progress;
+                    }
                 }
             }
         }
 
+
         BeginDrawing();
         ClearBackground(GetColor(0xF5F5F5FF));
 
-        // 1. Draw static edges
+        //Draw static edges
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                 if (city.matrix[i][j] != INF && i != j) {
@@ -243,7 +235,7 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // 2. Draw static nodes
+        // Draw static nodes
         for (int i = 0; i < n; i++) {
             DrawCircleV(positions[i], 30, SKYBLUE);
             DrawCircleLines((int)positions[i].x, (int)positions[i].y, 30, BLUE);
@@ -254,17 +246,15 @@ int main(int argc, char *argv[]) {
             DrawText(idText, (int)positions[i].x - textWidth/2, (int)positions[i].y - fontSize/2, fontSize, WHITE);
         }
 
-        // 3. Draw moving entity using engine coordinates
-        if (entityInitialized) {
-            DrawCircleV(entityPos, 15, ORANGE);
-            DrawCircleLines((int)entityPos.x, (int)entityPos.y, 15, RED);
-        }// 3. Draw moving entity using engine coordinates
-        if (entityInitialized) {
-            DrawCircleV(entityPos, 15, ORANGE);
-            DrawCircleLines((int)entityPos.x, (int)entityPos.y, 15, RED);
+        //Draw multiple travelers
+        for (int i = 0; i < num_travelers; i++) {
+            if (travelers[i].active) {
+                DrawCircleV(travelers[i].entityPos, 15, travelers[i].color);
+                DrawCircleLines((int)travelers[i].entityPos.x, (int)travelers[i].entityPos.y, 15, BLACK);
+            }
         }
 
-        // 4. Draw Play/Stop Button
+        // Draw Play/Stop Button
         DrawRectangleRec(playBtn, btnHover ? LIGHTGRAY : GRAY);
         DrawRectangleLinesEx(playBtn, 2, DARKGRAY);
 
@@ -272,9 +262,21 @@ int main(int argc, char *argv[]) {
         int btnTextWidth = MeasureText(btnText, 20);
         DrawText(btnText, playBtn.x + (playBtn.width - btnTextWidth) / 2, playBtn.y + 10, 20, BLACK);
 
-        // 5. Render destination message upon completion
-        if (animState == STATE_FINISHED) {
-            const char* msg = "DESTINATION REACHED!";
+        // Render destination message upon completion of ALL active travelers
+        bool allFinished = true;
+        bool hasActive = false;
+        for (int i = 0; i < num_travelers; i++) {
+            if (travelers[i].active) {
+                hasActive = true;
+                if (travelers[i].animState != STATE_FINISHED) {
+                    allFinished = false;
+                    break;
+                }
+            }
+        }
+
+        if (hasActive && allFinished) {
+            const char* msg = "ALL DESTINATIONS REACHED!";
             int msgWidth = MeasureText(msg, 30);
             DrawText(msg, (screenWidth - msgWidth) / 2, 20, 30, DARKGREEN);
         }
@@ -283,5 +285,11 @@ int main(int argc, char *argv[]) {
     }
 
     CloseWindow();
+    // Clean up zombie child processes
+    for (int i = 0; i < num_travelers; i++) {
+        if (travelers[i].active) {
+            waitpid(travelers[i].pid, NULL, 0);
+        }
+    }
     return 0;
 }
