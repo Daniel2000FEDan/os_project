@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#include <fcntl.h>
 #include <stdio.h>
 #include <math.h>
 #include "raylib.h"
@@ -33,6 +34,13 @@ typedef struct {
     bool active;
 } Traveler;
 
+typedef struct {
+    pid_t pid;
+    int current_node;
+    int next_node;
+    bool is_finished;
+} IPCMessage;
+
 Color travelerColors[] = { RED, PURPLE, GREEN, MAGENTA, MAROON, DARKBLUE };
 int numColors = 6;
 
@@ -66,6 +74,7 @@ void DrawWeight(Vector2 start, Vector2 end, int weight) {
 }
 
 int main(int argc, char *argv[]) {
+    int pipe_fd[2];
     // Validate command line arguments for the simulator
     if (argc != 2) {
         printf("Usage: ./sim <file_name>\n");
@@ -83,7 +92,6 @@ int main(int argc, char *argv[]) {
         fclose(file);
         return 1;
     }
-
     City city;
     init_city(&city, n);
 
@@ -112,6 +120,16 @@ int main(int argc, char *argv[]) {
     }
     fclose(file);
 
+    // Initialize IPC pipe
+    if (pipe(pipe_fd) < 0) {
+        perror("Error: pipe failed");
+        exit(1);
+    }
+
+    // Set the read end of the pipe to non-blocking mode
+    int flags = fcntl(pipe_fd[0], F_GETFL, 0);
+    fcntl(pipe_fd[0], F_SETFL, flags | O_NONBLOCK);
+
     //FORKING PROCESSES
     for (int i = 0; i < num_travelers; i++) {
         if (!travelers[i].active) continue;
@@ -123,8 +141,7 @@ int main(int argc, char *argv[]) {
             exit(1);
         }
         else if (pid == 0) {
-            // Child process
-            printf("[%d] started\n", getpid());
+            close(pipe_fd[0]); // Close unused read end in child
 
             while (1) {
                 pause();
@@ -136,6 +153,7 @@ int main(int argc, char *argv[]) {
             travelers[i].pid = pid;
         }
     }
+    close(pipe_fd[1]); // Close unused write end in parent
 
     const int screenWidth = 800;
     const int screenHeight = 600;
@@ -165,6 +183,25 @@ int main(int argc, char *argv[]) {
     }
 
     while (!WindowShouldClose()) {
+        IPCMessage msg = {0};
+        // Read all available messages from the pipe for the current frame
+        while (read(pipe_fd[0], &msg, sizeof(IPCMessage)) > 0) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (travelers[i].active && travelers[i].pid == msg.pid) {
+                    if (msg.is_finished) {
+                        travelers[i].animState = STATE_FINISHED;
+                        printf("[PID=%d] finished\n", msg.pid);
+                    } else if (msg.next_node == -1) {
+                        printf("[PID=%d] arrived at node %d | DESTINATION\n", msg.pid, msg.current_node);
+                    } else {
+                        printf("[PID=%d] arrived at node %d | next node: %d\n", msg.pid, msg.current_node, msg.next_node);
+                        travelers[i].entityPos = positions[msg.current_node];
+                    }
+                    fflush(stdout);
+                    break;
+                }
+            }
+        }
         // Handle button logic
         Vector2 mousePoint = GetMousePosition();
         bool btnHover = CheckCollisionPointRec(mousePoint, playBtn);
@@ -177,45 +214,6 @@ int main(int argc, char *argv[]) {
                     if (travelers[i].active && travelers[i].animState == STATE_IDLE && travelers[i].path.count > 1) {
                         travelers[i].animState = STATE_MOVING;
                         travelers[i].stateStartTime = GetTime();
-                    }
-                }
-            }
-        }
-
-        // ANIMATION ENGINE MATH
-        if (isAnimating) {
-            for (int i = 0; i < num_travelers; i++) {
-                if (!travelers[i].active || travelers[i].animState == STATE_FINISHED || travelers[i].animState == STATE_IDLE) continue;
-                if (travelers[i].animState == STATE_WAITING) {
-                    if (GetTime() - travelers[i].stateStartTime >= 1.0) {
-                        travelers[i].animState = STATE_MOVING;
-                        travelers[i].stateStartTime = GetTime();
-                    }
-                }
-                else if (travelers[i].animState == STATE_MOVING) {
-                    int u = travelers[i].path.nodes[travelers[i].pathIdx];
-                    int v = travelers[i].path.nodes[travelers[i].pathIdx + 1];
-                    int W = city.matrix[u][v];
-                    double elapsed = GetTime() - travelers[i].stateStartTime;
-
-                    int currentJump = (int)(elapsed / 0.3);
-
-                    if (currentJump >= W) {
-                        travelers[i].entityPos = positions[v];
-                        travelers[i].pathIdx++;
-
-                        if (travelers[i].pathIdx >= travelers[i].path.count - 1) {
-                            travelers[i].animState = STATE_FINISHED;
-                            // Send signal to terminate the child process
-                            kill(travelers[i].pid, SIGTERM);
-                        } else {
-                            travelers[i].animState = STATE_WAITING;
-                            travelers[i].stateStartTime = GetTime();
-                        }
-                    } else {
-                        float progress = (float)currentJump / W;
-                        travelers[i].entityPos.x = positions[u].x + (positions[v].x - positions[u].x) * progress;
-                        travelers[i].entityPos.y = positions[u].y + (positions[v].y - positions[u].y) * progress;
                     }
                 }
             }
