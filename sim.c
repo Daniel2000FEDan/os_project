@@ -1,4 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 #include <fcntl.h>
 #include <stdio.h>
 #include <math.h>
@@ -32,6 +33,8 @@ typedef struct {
     double stateStartTime;
     Vector2 entityPos;
     bool active;
+    int srcNode;
+    int dstNode;
 } Traveler;
 
 typedef struct {
@@ -44,6 +47,9 @@ typedef struct {
 Color travelerColors[] = { RED, PURPLE, GREEN, MAGENTA, MAROON, DARKBLUE };
 int numColors = 6;
 
+void handle_start_signal(int sig) {
+    (void)sig;
+}
 
 // Draws an arrow between two nodes, adjusting start/end points to avoid node overlap
 void DrawArrow(Vector2 start, Vector2 end, float radius, Color color) {
@@ -143,8 +149,28 @@ int main(int argc, char *argv[]) {
         else if (pid == 0) {
             close(pipe_fd[0]); // Close unused read end in child
 
-            while (1) {
-                pause();
+            signal(SIGUSR1, handle_start_signal);
+            pause(); // Wait for start signal from parent
+            for (int idx = 0; idx < travelers[i].path.count; idx++) {
+                IPCMessage msg = {0};
+                msg.pid = getpid();
+                msg.current_node = travelers[i].path.nodes[idx];
+
+                int weight = 1; // default weight for finish
+                if (idx == travelers[i].path.count - 1) {
+                    msg.next_node = -1;
+                    msg.is_finished = true;
+                } else {
+                    msg.next_node = travelers[i].path.nodes[idx + 1];
+                    msg.is_finished = false;
+                    // taking real weight from matrix
+                    weight = city.matrix[msg.current_node][msg.next_node];
+                }
+
+                write(pipe_fd[1], &msg, sizeof(IPCMessage));
+
+                // sleep depend on weight
+                usleep(weight * 250000);
             }
             exit(0);
         }
@@ -190,12 +216,17 @@ int main(int argc, char *argv[]) {
                 if (travelers[i].active && travelers[i].pid == msg.pid) {
                     if (msg.is_finished) {
                         travelers[i].animState = STATE_FINISHED;
+                        travelers[i].entityPos = positions[msg.current_node];
                         printf("[PID=%d] finished\n", msg.pid);
                     } else if (msg.next_node == -1) {
                         printf("[PID=%d] arrived at node %d | DESTINATION\n", msg.pid, msg.current_node);
                     } else {
                         printf("[PID=%d] arrived at node %d | next node: %d\n", msg.pid, msg.current_node, msg.next_node);
-                        travelers[i].entityPos = positions[msg.current_node];
+
+                        travelers[i].animState = STATE_MOVING;
+                        travelers[i].srcNode = msg.current_node;
+                        travelers[i].dstNode = msg.next_node;
+                        travelers[i].stateStartTime = GetTime();
                     }
                     fflush(stdout);
                     break;
@@ -208,17 +239,40 @@ int main(int argc, char *argv[]) {
 
         if (btnHover && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             isAnimating = !isAnimating; // Toggle animation state
-
             if (isAnimating) {
                 for (int i = 0; i < num_travelers; i++) {
                     if (travelers[i].active && travelers[i].animState == STATE_IDLE && travelers[i].path.count > 1) {
-                        travelers[i].animState = STATE_MOVING;
-                        travelers[i].stateStartTime = GetTime();
+                        kill(travelers[i].pid, SIGUSR1); // Wake up this specific child process
                     }
                 }
             }
         }
 
+        // Discrete frame-by-frame animation update
+        for (int i = 0; i < num_travelers; i++) {
+            if (travelers[i].active && travelers[i].animState == STATE_MOVING) {
+                double elapsed = GetTime() - travelers[i].stateStartTime;
+
+                // Retrieve the actual edge weight (which equals the number of discrete steps)
+                int weight = city.matrix[travelers[i].srcNode][travelers[i].dstNode];
+
+                // Calculate the current step (one step occurs every 0.25 seconds)
+                int current_step = (int)(elapsed / 0.25f);
+
+                // Clamp the current step to prevent overshooting the destination node
+                if (current_step > weight) current_step = weight;
+
+                // Calculate the discrete interpolation factor (e.g., 0.0 -> 0.5 -> 1.0 for weight 2)
+                float t = (float)current_step / weight;
+
+                Vector2 startPos = positions[travelers[i].srcNode];
+                Vector2 endPos = positions[travelers[i].dstNode];
+
+                // Update the entity position to the specific fractional point along the edge
+                travelers[i].entityPos.x = startPos.x + (endPos.x - startPos.x) * t;
+                travelers[i].entityPos.y = startPos.y + (endPos.y - startPos.y) * t;
+            }
+        }
 
         BeginDrawing();
         ClearBackground(GetColor(0xF5F5F5FF));
