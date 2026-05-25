@@ -27,5 +27,10 @@
 * **Run:** `./sim <file_name>`
 * **Implementation Description:** Upgraded the simulation engine to support concurrent travelers. Each active entity now operates within its own dedicated child process using `fork()`. The main process coordinates synchronized animations and terminates children via Unix signals (`SIGTERM`) and `waitpid()` cleanup upon arrival. Added a global "ALL DESTINATIONS REACHED" status notification.
 
+### Milestone 5: Process Synchronization and IPC Animation
+* **Build:** `make`
+* **Run:** `./sim <file_name>`
+* **Implementation Description:** Integration of POSIX Inter-Process Communication (IPC). The parent process spawns child processes for each traveler and uses a non-blocking `pipe` to read their real-time status. Child processes use `pause()` upon creation and are perfectly synchronized via a `SIGUSR1` signal from the parent when the simulation starts. Each child calculates its travel delay using `usleep` based on edge weights, while the parent visually renders this movement using discrete frame-by-frame interpolation synchronized with the IPC messages.
+
 ## Cleanup
 * **Clean build files:** `make clean`
