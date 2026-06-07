@@ -10,16 +10,20 @@
 #include <sys/wait.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <semaphore.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #define MAX_TRAVELERS 20
 
 // State machine definitions for animation engine
 typedef enum {
-    STATE_IDLE,
     STATE_MOVING,
-    STATE_WAITING,
+    STATE_IDLE,
+    STATE_WAITING_AT_NODE,
+    STATE_AT_NODE,
     STATE_FINISHED
-} AnimState;
+} TravelerState;
 
 typedef struct {
     int id;
@@ -28,7 +32,7 @@ typedef struct {
     Path path;
     Color color;
     pid_t pid;
-    AnimState animState;
+    TravelerState animState;
     int pathIdx;
     double stateStartTime;
     Vector2 entityPos;
@@ -41,7 +45,7 @@ typedef struct {
     pid_t pid;
     int current_node;
     int next_node;
-    bool is_finished;
+    TravelerState state;
 } IPCMessage;
 
 Color travelerColors[] = { RED, PURPLE, GREEN, MAGENTA, MAROON, DARKBLUE };
@@ -136,6 +140,24 @@ int main(int argc, char *argv[]) {
     int flags = fcntl(pipe_fd[0], F_GETFL, 0);
     fcntl(pipe_fd[0], F_SETFL, flags | O_NONBLOCK);
 
+    /* Creating an array to hold semaphore pointers for each node */
+    sem_t **node_sems = malloc(n * sizeof(sem_t *));
+    char sem_name[64];
+    /* Initialization of semaphore for each node in the graph */
+    for (int i = 0; i < n; i++) {
+        sprintf(sem_name, "/node_sem_%d", i);
+        /* Unlinking first in case of a previous crash leaving dead semaphores */
+        sem_unlink(sem_name);
+        /* O_CREAT creates the semaphore. 0644 are permissions.
+           1 is the initial value (1 slot available in the node) */
+        node_sems[i] = sem_open(sem_name, O_CREAT | O_EXCL, 0644, 1);
+
+        if (node_sems[i] == SEM_FAILED) {
+            perror("Error: Semaphore initialization failed");
+            exit(1);
+        }
+    }
+
     //FORKING PROCESSES
     for (int i = 0; i < num_travelers; i++) {
         if (!travelers[i].active) continue;
@@ -156,21 +178,41 @@ int main(int argc, char *argv[]) {
                 msg.pid = getpid();
                 msg.current_node = travelers[i].path.nodes[idx];
 
-                int weight = 1; // default weight for finish
+                int weight = 1;
                 if (idx == travelers[i].path.count - 1) {
                     msg.next_node = -1;
-                    msg.is_finished = true;
                 } else {
                     msg.next_node = travelers[i].path.nodes[idx + 1];
-                    msg.is_finished = false;
-                    // taking real weight from matrix
                     weight = city.matrix[msg.current_node][msg.next_node];
                 }
 
+                /* 1. Tell parent: I am waiting outside the node */
+                msg.state = STATE_WAITING_AT_NODE;
                 write(pipe_fd[1], &msg, sizeof(IPCMessage));
 
-                // sleep depend on weight
-                usleep(weight * 250000);
+                /* 2. Try to lock the node. If occupied, process sleeps here */
+                sem_wait(node_sems[msg.current_node]);
+
+                /* 3. Lock acquired! Tell parent I am inside */
+                msg.state = STATE_AT_NODE;
+                write(pipe_fd[1], &msg, sizeof(IPCMessage));
+
+                /* 4. Sleep exactly 1 second inside the node */
+                usleep(1000000);
+
+                /* 5. Leave the node and unlock it for others */
+                sem_post(node_sems[msg.current_node]);
+
+                /* 6. If not destination, travel to the next node */
+                if (msg.next_node != -1) {
+                    msg.state = STATE_MOVING;
+                    write(pipe_fd[1], &msg, sizeof(IPCMessage));
+                    usleep(weight * 250000);
+                } else {
+                    /* Reached destination */
+                    msg.state = STATE_FINISHED;
+                    write(pipe_fd[1], &msg, sizeof(IPCMessage));
+                }
             }
             exit(0);
         }
@@ -214,19 +256,29 @@ int main(int argc, char *argv[]) {
         while (read(pipe_fd[0], &msg, sizeof(IPCMessage)) > 0) {
             for (int i = 0; i < num_travelers; i++) {
                 if (travelers[i].active && travelers[i].pid == msg.pid) {
-                    if (msg.is_finished) {
+                    /* Handle traveler reaching their final destination */
+                    if (msg.state == STATE_FINISHED) {
                         travelers[i].animState = STATE_FINISHED;
                         travelers[i].entityPos = positions[msg.current_node];
-                        printf("[PID=%d] finished\n", msg.pid);
-                    } else if (msg.next_node == -1) {
-                        printf("[PID=%d] arrived at node %d | DESTINATION\n", msg.pid, msg.current_node);
-                    } else {
-                        printf("[PID=%d] arrived at node %d | next node: %d\n", msg.pid, msg.current_node, msg.next_node);
-
+                        printf("[PID=%d] FINISHED at node %d\n", msg.pid, msg.current_node);
+                    }
+                    /* Handle traveler waiting outside a busy node (waiting for semaphore lock) */
+                    else if (msg.state == STATE_WAITING_AT_NODE) {
+                        travelers[i].animState = STATE_WAITING_AT_NODE;
+                        printf("[PID=%d] WAITING outside node %d...\n", msg.pid, msg.current_node);
+                    }
+                    /* Handle traveler successfully entering the node (semaphore lock acquired) */
+                    else if (msg.state == STATE_AT_NODE) {
+                        travelers[i].animState = STATE_AT_NODE;
+                        printf("[PID=%d] ENTERED node %d\n", msg.pid, msg.current_node);
+                    }
+                    /* Handle traveler leaving the node and moving along the edge */
+                    else if (msg.state == STATE_MOVING) {
                         travelers[i].animState = STATE_MOVING;
                         travelers[i].srcNode = msg.current_node;
                         travelers[i].dstNode = msg.next_node;
                         travelers[i].stateStartTime = GetTime();
+                        printf("[PID=%d] MOVING from %d to %d\n", msg.pid, msg.current_node, msg.next_node);
                     }
                     fflush(stdout);
                     break;
@@ -343,5 +395,12 @@ int main(int argc, char *argv[]) {
             waitpid(travelers[i].pid, NULL, 0);
         }
     }
+    // Clean up semaphores before exiting
+    for (int i = 0; i < n; i++) {
+        sprintf(sem_name, "/node_sem_%d", i);
+        sem_close(node_sems[i]);
+        sem_unlink(sem_name);
+    }
+    free(node_sems);
     return 0;
 }
