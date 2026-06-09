@@ -32,5 +32,10 @@
 * **Run:** `./sim <file_name>`
 * **Implementation Description:** Integration of POSIX Inter-Process Communication (IPC). The parent process spawns child processes for each traveler and uses a non-blocking `pipe` to read their real-time status. Child processes use `pause()` upon creation and are perfectly synchronized via a `SIGUSR1` signal from the parent when the simulation starts. Each child calculates its travel delay using `usleep` based on edge weights, while the parent visually renders this movement using discrete frame-by-frame interpolation synchronized with the IPC messages.
 
+### Milestone 6: Node Access Synchronization and Critical Sections
+* **Build:** `make`
+* **Run:** `./sim <file_name>`
+* **Implementation Description:** Enforcement of a critical resource constraint where a maximum of one traveler process can occupy a specific graph node at any given moment. Access to each node is synchronized using isolated named POSIX semaphores (`sem_t`) initialized with a binary lock value. When a child process reaches a node, it broadcasts a `STATE_WAITING_AT_NODE` alert via a non-blocking IPC pipe, prompting the parent GUI to dynamically render a distinct red "!" warning icon and apply visual transparency to indicate the waiting state. The process then blocks on `sem_wait`. Once the lock is acquired, the traveler registers its entry, executes a strict 1-second simulated workload using `usleep(1000000)`, and immediately invokes `sem_post` upon departure to safely hand over the critical section to pending concurrent workers without risks of starvation or deadlock.
+
 ## Cleanup
 * **Clean build files:** `make clean`
