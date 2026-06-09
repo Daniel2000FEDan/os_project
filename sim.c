@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <semaphore.h>
-#include <fcntl.h>
 #include <sys/stat.h>
 
 #define MAX_TRAVELERS 20
@@ -39,6 +38,8 @@ typedef struct {
     bool active;
     int srcNode;
     int dstNode;
+    Vector2 visual_pos;      // The actual position rendered on screen
+    float entry_exit_timer;  // Timer tracking entry/exit transition progress
 } Traveler;
 
 typedef struct {
@@ -247,6 +248,8 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < num_travelers; i++) {
         if (travelers[i].active && travelers[i].path.count > 0) {
             travelers[i].entityPos = positions[travelers[i].path.nodes[0]];
+            // Initialize visual position to prevent teleportation glitches on start
+            travelers[i].visual_pos = travelers[i].entityPos;
         }
     }
 
@@ -265,11 +268,14 @@ int main(int argc, char *argv[]) {
                     /* Handle traveler waiting outside a busy node (waiting for semaphore lock) */
                     else if (msg.state == STATE_WAITING_AT_NODE) {
                         travelers[i].animState = STATE_WAITING_AT_NODE;
+                        travelers[i].dstNode = msg.current_node; /* Save target node for drawing */
+                        travelers[i].entityPos = positions[msg.current_node];
                         printf("[PID=%d] WAITING outside node %d...\n", msg.pid, msg.current_node);
                     }
                     /* Handle traveler successfully entering the node (semaphore lock acquired) */
                     else if (msg.state == STATE_AT_NODE) {
                         travelers[i].animState = STATE_AT_NODE;
+                        travelers[i].entityPos = positions[msg.current_node];
                         printf("[PID=%d] ENTERED node %d\n", msg.pid, msg.current_node);
                     }
                     /* Handle traveler leaving the node and moving along the edge */
@@ -291,11 +297,31 @@ int main(int argc, char *argv[]) {
 
         if (btnHover && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             isAnimating = !isAnimating; // Toggle animation state
-            if (isAnimating) {
-                for (int i = 0; i < num_travelers; i++) {
-                    if (travelers[i].active && travelers[i].animState == STATE_IDLE && travelers[i].path.count > 1) {
-                        kill(travelers[i].pid, SIGUSR1); // Wake up this specific child process
+
+            for (int i = 0; i < num_travelers; i++) {
+                if (travelers[i].active) {
+                    if (isAnimating) {
+                        /* Wake up idle travelers or resume paused ones */
+                        if (travelers[i].animState == STATE_IDLE && travelers[i].path.count > 1) {
+                            kill(travelers[i].pid, SIGUSR1);
+                        } else if (travelers[i].animState != STATE_FINISHED) {
+                            kill(travelers[i].pid, SIGCONT);
+                        }
+                    } else {
+                        /* Freeze processes via OS signals when stopped */
+                        if (travelers[i].animState != STATE_IDLE && travelers[i].animState != STATE_FINISHED) {
+                            kill(travelers[i].pid, SIGSTOP);
+                        }
                     }
+                }
+            }
+        }
+
+        /* Adjust start times while paused to prevent visual teleportation */
+        if (!isAnimating) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (travelers[i].active && travelers[i].animState == STATE_MOVING) {
+                    travelers[i].stateStartTime += GetFrameTime();
                 }
             }
         }
@@ -308,14 +334,10 @@ int main(int argc, char *argv[]) {
                 // Retrieve the actual edge weight (which equals the number of discrete steps)
                 int weight = city.matrix[travelers[i].srcNode][travelers[i].dstNode];
 
-                // Calculate the current step (one step occurs every 0.25 seconds)
-                int current_step = (int)(elapsed / 0.25f);
-
-                // Clamp the current step to prevent overshooting the destination node
-                if (current_step > weight) current_step = weight;
-
-                // Calculate the discrete interpolation factor (e.g., 0.0 -> 0.5 -> 1.0 for weight 2)
-                float t = (float)current_step / weight;
+                // slow move by line
+                float total_time = weight * 0.25f;
+                float t = (float)elapsed / total_time;
+                if (t > 1.0f) t = 1.0f;
 
                 Vector2 startPos = positions[travelers[i].srcNode];
                 Vector2 endPos = positions[travelers[i].dstNode];
@@ -350,11 +372,56 @@ int main(int argc, char *argv[]) {
             DrawText(idText, (int)positions[i].x - textWidth/2, (int)positions[i].y - fontSize/2, fontSize, WHITE);
         }
 
-        //Draw multiple travelers
+        /* Draw multiple travelers with orbit logic for waiting states */
+        int waiting_counts[MAX_V] = {0};
+        int waiting_index[MAX_TRAVELERS] = {0};
+
+        /* First pass: count how many travelers are waiting at each node */
         for (int i = 0; i < num_travelers; i++) {
-            if (travelers[i].active) {
-                DrawCircleV(travelers[i].entityPos, 15, travelers[i].color);
-                DrawCircleLines((int)travelers[i].entityPos.x, (int)travelers[i].entityPos.y, 15, BLACK);
+            if (travelers[i].active && travelers[i].animState == STATE_WAITING_AT_NODE) {
+                int node = travelers[i].dstNode;
+                waiting_index[i] = waiting_counts[node];
+                waiting_counts[node]++;
+            }
+        }
+
+        /* Second pass: render the travelers */
+        for (int i = 0; i < num_travelers; i++) {
+            if (travelers[i].active && travelers[i].animState != STATE_FINISHED) {
+                Vector2 drawPos = travelers[i].entityPos;
+                Color drawColor = travelers[i].color;
+
+                /* If waiting, calculate position on an orbit around the target node */
+                if (travelers[i].animState == STATE_WAITING_AT_NODE) {
+                    int node = travelers[i].dstNode;
+                    int total_waiting = waiting_counts[node];
+                    int idx = waiting_index[i];
+
+                    /* Distribute evenly in a circle (radius 45 is slightly larger than node radius 30) */
+                    float angle = idx * (2 * PI / total_waiting);
+                    float orbitRadius = 45.0f;
+
+                    drawPos.x = positions[node].x + orbitRadius * cosf(angle);
+                    drawPos.y = positions[node].y + orbitRadius * sinf(angle);
+
+                    /* Fade color to visually indicate waiting state */
+                    drawColor = Fade(drawColor, 0.4f);
+                }
+
+
+               // Smoothly interpolate visual position toward the calculated draw target
+               float smoothingSpeed = 12.0f;
+               travelers[i].visual_pos.x += (drawPos.x - travelers[i].visual_pos.x) * smoothingSpeed * GetFrameTime();
+               travelers[i].visual_pos.y += (drawPos.y - travelers[i].visual_pos.y) * smoothingSpeed * GetFrameTime();
+
+                /* Draw the traveler */
+                DrawCircleV(travelers[i].visual_pos, 15, drawColor);
+                DrawCircleLines((int)travelers[i].visual_pos.x, (int)travelers[i].visual_pos.y, 15, BLACK);
+
+                /* Draw a visual warning icon "!" if waiting */
+                if (travelers[i].animState == STATE_WAITING_AT_NODE) {
+                DrawText("!", (int)travelers[i].visual_pos.x - 3, (int)travelers[i].visual_pos.y - 10, 20, RED);
+                }
             }
         }
 
