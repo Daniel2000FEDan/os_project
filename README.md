@@ -37,5 +37,10 @@
 * **Run:** `./sim <file_name>`
 * **Implementation Description:** Enforcement of a critical resource constraint where a maximum of one traveler process can occupy a specific graph node at any given moment. Access to each node is synchronized using isolated named POSIX semaphores (`sem_t`) initialized with a binary lock value. When a child process reaches a node, it broadcasts a `STATE_WAITING_AT_NODE` alert via a non-blocking IPC pipe, prompting the parent GUI to dynamically render a distinct red "!" warning icon and apply visual transparency to indicate the waiting state. The process then blocks on `sem_wait`. Once the lock is acquired, the traveler registers its entry, executes a strict 1-second simulated workload using `usleep(1000000)`, and immediately invokes `sem_post` upon departure to safely hand over the critical section to pending concurrent workers without risks of starvation or deadlock.
 
+### Milestone 7: Process Scheduling Algorithms and Visual Queues
+* **Build:** `make milestone7 (or simply 'make')`
+* **Run:** `./sim -schd <fcfs|sjf> <file_name>`
+* **Implementation Description:** Introduction of CPU-like process scheduling algorithms (First-Come, First-Served and Shortest Job First) to manage concurrent entity arrivals at critical graph nodes. The execution parameters are validated via rigorous command-line argument parsing (`argc/argv`). Instead of basic blocking, waiting travelers are queued dynamically using Shared Memory (`shm_open`, `mmap`). When multiple processes contend for a node, the scheduler executes the chosen algorithm logic based on their calculated time metrics. The parent GUI renders waiting queues in real time using a dynamic orbital layout, displaying a distinct red "!" warning icon with custom transparency. Performance analysis is calculated upon arrival, tracking precise Turnaround Time and Waiting Time metrics for each process.
+
 ## Cleanup
 * **Clean build files:** `make clean`
