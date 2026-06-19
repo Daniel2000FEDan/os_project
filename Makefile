@@ -10,6 +10,7 @@ milestone3: $(TARGET)
 milestone4: $(TARGET)
 milestone5: $(TARGET)
 milestone6: $(TARGET)
+milestone7: $(TARGET)
 
 $(TARGET): $(SRCS)
 	$(CC) $(CFLAGS) $(SRCS) -o $(TARGET) $(LIBS)

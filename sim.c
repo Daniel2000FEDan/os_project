@@ -42,7 +42,9 @@ typedef struct {
     int srcNode;
     int dstNode;
     Vector2 visual_pos;      // The actual position rendered on screen
-    float entry_exit_timer;  // Timer tracking entry/exit transition progress
+    double start_time;       // Simulation start timestamp
+    double total_wait_time;  // Total accumulated waiting time in seconds
+    double wait_start_tick;  // Timestamp when the traveler started waiting at the current node
 } Traveler;
 
 typedef struct {
@@ -53,19 +55,19 @@ typedef struct {
 } IPCMessage;
 
 typedef struct {
-    int id;                 // ID путешественника (от 0 до num_travelers-1)
+    int id;                 // ID traveler (from 0 to num_travelers-1)
     pid_t pid;
     bool is_waiting;
-    int target_node;        // Какой узел ждёт процесс
-    long long arrival_time; // Для FCFS (время в микросекундах)
-    int next_weight;        // Для SJF (вес следующего ребра)
+    int target_node;        // Which node is the process waiting for
+    long long arrival_time; // for FCFS (time in msec)
+    int next_weight;        // for SJF (weight next rib)
 } SharedWaitingState;
 
 typedef struct {
-    sem_t shm_mutex;                            // Общий мьютекс для защиты этой памяти
-    sem_t traveler_sems[MAX_TRAVELERS];         // Личный семафор для сна каждого путешественника
-    SharedWaitingState travelers[MAX_TRAVELERS]; // Таблица состояний всех шариков
-    bool node_occupied[100];                    // Статус узлов: true = занят, false = свободен (с запасом на 100 узлов)
+    sem_t shm_mutex;                            // Shared mutex to protect this memory
+    sem_t traveler_sems[MAX_TRAVELERS];         // A personal semaphore for every traveler's sleep
+    SharedWaitingState travelers[MAX_TRAVELERS]; // table of states of all balls
+    bool node_occupied[100];                    // Node status: true = busy, false = free (with a reserve of 100 nodes)
 } SharedData;
 
 
@@ -291,8 +293,8 @@ int main(int argc, char *argv[]) {
                 msg.state = STATE_AT_NODE;
                 write(pipe_fd[1], &msg, sizeof(IPCMessage));
 
-                /* 4. Sleep exactly 1 second inside the node */
-                usleep(1000000);
+                /* 4. Sleep exactly 3 second inside the node */
+                usleep(3000000);
 
                 /* 5. Leave the node and unlock it for others */
                 // Lock shared memory to safely evaluate the queue
@@ -393,6 +395,8 @@ int main(int argc, char *argv[]) {
                     }
                     /* Handle traveler waiting outside a busy node (waiting for semaphore lock) */
                     else if (msg.state == STATE_WAITING_AT_NODE) {
+                        // FIX: use 'i' instead of msg.traveler_id
+                        travelers[i].wait_start_tick = GetTime();
                         travelers[i].animState = STATE_WAITING_AT_NODE;
                         travelers[i].dstNode = msg.current_node; /* Save target node for drawing */
                         travelers[i].entityPos = positions[msg.current_node];
@@ -400,6 +404,11 @@ int main(int argc, char *argv[]) {
                     }
                     /* Handle traveler successfully entering the node (semaphore lock acquired) */
                     else if (msg.state == STATE_AT_NODE) {
+                        // FIX: Calculate accumulated waiting time when entering the node
+                        if (travelers[i].wait_start_tick > 0.0) {
+                            travelers[i].total_wait_time += (GetTime() - travelers[i].wait_start_tick);
+                            travelers[i].wait_start_tick = 0.0;
+                        }
                         travelers[i].animState = STATE_AT_NODE;
                         travelers[i].entityPos = positions[msg.current_node];
                         printf("[PID=%d] ENTERED node %d\n", msg.pid, msg.current_node);
@@ -421,8 +430,20 @@ int main(int argc, char *argv[]) {
         Vector2 mousePoint = GetMousePosition();
         bool btnHover = CheckCollisionPointRec(mousePoint, playBtn);
 
-        if (btnHover && IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+        if (btnHover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
             isAnimating = !isAnimating; // Toggle animation state
+
+            // Start metrics tracking on the very first simulation launch
+            if (isAnimating) {
+                double current_time = GetTime();
+                for (int i = 0; i < num_travelers; i++) {
+                    if (travelers[i].active && travelers[i].start_time == 0.0) {
+                        travelers[i].start_time = current_time;
+                        travelers[i].total_wait_time = 0.0;
+                        travelers[i].wait_start_tick = 0.0;
+                    }
+                }
+            }
 
             for (int i = 0; i < num_travelers; i++) {
                 if (travelers[i].active) {
@@ -442,7 +463,6 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-
         /* Adjust start times while paused to prevent visual teleportation */
         if (!isAnimating) {
             for (int i = 0; i < num_travelers; i++) {
@@ -559,6 +579,10 @@ int main(int argc, char *argv[]) {
         int btnTextWidth = MeasureText(btnText, 20);
         DrawText(btnText, playBtn.x + (playBtn.width - btnTextWidth) / 2, playBtn.y + 10, 20, BLACK);
 
+        // Display the currently active scheduler mode on screen
+        const char* modeText = (scheduler_type == 1) ? "Scheduler: FCFS" : "Scheduler: SJF";
+        DrawText(modeText, 20, 75, 20, DARKGRAY);
+
         // Render destination message upon completion of ALL active travelers
         bool allFinished = true;
         bool hasActive = false;
@@ -580,6 +604,20 @@ int main(int argc, char *argv[]) {
 
         EndDrawing();
     }
+
+    // Display final performance metrics for each traveler
+    printf("\nSIMULATION STATISTICS\n");
+    for (int i = 0; i < num_travelers; i++) {
+        if (travelers[i].active) {
+            double turnaround_time = GetTime() - travelers[i].start_time;
+            printf("Traveler %d (PID: %d):\n", travelers[i].id, travelers[i].pid);
+            printf("  - Turnaround Time: %.2f seconds\n", turnaround_time);
+            printf("  - Total Waiting Time: %.2f seconds\n", travelers[i].total_wait_time);
+            printf("\n");
+        }
+    }
+    printf("\n");
+
 
     CloseWindow();
     // Clean up zombie child processes
