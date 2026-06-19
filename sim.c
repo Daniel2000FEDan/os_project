@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
+#include <string.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <math.h>
@@ -12,6 +13,8 @@
 #include <signal.h>
 #include <semaphore.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/time.h>
 
 #define MAX_TRAVELERS 20
 
@@ -49,8 +52,26 @@ typedef struct {
     TravelerState state;
 } IPCMessage;
 
+typedef struct {
+    int id;                 // ID путешественника (от 0 до num_travelers-1)
+    pid_t pid;
+    bool is_waiting;
+    int target_node;        // Какой узел ждёт процесс
+    long long arrival_time; // Для FCFS (время в микросекундах)
+    int next_weight;        // Для SJF (вес следующего ребра)
+} SharedWaitingState;
+
+typedef struct {
+    sem_t shm_mutex;                            // Общий мьютекс для защиты этой памяти
+    sem_t traveler_sems[MAX_TRAVELERS];         // Личный семафор для сна каждого путешественника
+    SharedWaitingState travelers[MAX_TRAVELERS]; // Таблица состояний всех шариков
+    bool node_occupied[100];                    // Статус узлов: true = занят, false = свободен (с запасом на 100 узлов)
+} SharedData;
+
+
 Color travelerColors[] = { RED, PURPLE, GREEN, MAGENTA, MAROON, DARKBLUE };
 int numColors = 6;
+SharedData *shared_data = NULL;
 
 void handle_start_signal(int sig) {
     (void)sig;
@@ -87,15 +108,55 @@ void DrawWeight(Vector2 start, Vector2 end, int weight) {
 int main(int argc, char *argv[]) {
     int pipe_fd[2];
     // Validate command line arguments for the simulator
-    if (argc != 2) {
-        printf("Usage: ./sim <file_name>\n");
+    if (argc != 4) {
+        fprintf(stderr, "Usage: %s -schd <fcfs|sjf> <file_name>\n", argv[0]);
         return 1;
     }
 
-    FILE* file = fopen(argv[1], "r");
-    if (!file) {
-        printf("Error: Could not open %s\n", argv[1]);
+    if (strcmp(argv[1], "-schd") != 0) {
+        fprintf(stderr, "Error: Missing -schd flag\n");
         return 1;
+    }
+
+    int scheduler_type = 0; // 1 = FCFS, 2 = SJF
+    if (strcmp(argv[2], "fcfs") == 0) {
+        scheduler_type = 1;
+    } else if (strcmp(argv[2], "sjf") == 0) {
+        scheduler_type = 2;
+    } else {
+        fprintf(stderr, "Error: Invalid scheduler type. Use 'fcfs' or 'sjf'.\n");
+        return 1;
+    }
+
+    FILE* file = fopen(argv[3], "r");
+    if (!file) {
+        printf("Error: Could not open %s\n", argv[3]);
+        return 1;
+    }
+
+    // Allocate anonymous shared memory for all processes
+    shared_data = mmap(NULL, sizeof(SharedData), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (shared_data == MAP_FAILED) {
+        perror("Error: Shared memory allocation failed");
+        fclose(file);
+        return 1;
+    }
+
+    // Zero out the structure for safety
+    memset(shared_data, 0, sizeof(SharedData));
+
+    // Initialize the shared mutex (1 means shared between processes)
+    if (sem_init(&shared_data->shm_mutex, 1, 1) < 0) {
+        perror("Error: Shared mutex initialization failed");
+        return 1;
+    }
+
+    // Initialize personal semaphores for each traveler with 0
+    for (int i = 0; i < MAX_TRAVELERS; i++) {
+        if (sem_init(&shared_data->traveler_sems[i], 1, 0) < 0) {
+            perror("Error: Traveler semaphore initialization failed");
+            return 1;
+        }
     }
 
     int n, m;
@@ -163,6 +224,10 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < num_travelers; i++) {
         if (!travelers[i].active) continue;
 
+        // Initialize traveler ID in shared memory before fork
+        shared_data->travelers[i].id = i;
+        shared_data->travelers[i].is_waiting = false;
+
         pid_t pid = fork();
 
         if (pid < 0) {
@@ -171,6 +236,8 @@ int main(int argc, char *argv[]) {
         }
         else if (pid == 0) {
             close(pipe_fd[0]); // Close unused read end in child
+            // Save actual child PID into shared memory
+            shared_data->travelers[i].pid = getpid();
 
             signal(SIGUSR1, handle_start_signal);
             pause(); // Wait for start signal from parent
@@ -192,7 +259,33 @@ int main(int argc, char *argv[]) {
                 write(pipe_fd[1], &msg, sizeof(IPCMessage));
 
                 /* 2. Try to lock the node. If occupied, process sleeps here */
-                sem_wait(node_sems[msg.current_node]);
+                // Get current timestamp in microseconds for FCFS
+                struct timeval tv;
+                gettimeofday(&tv, NULL);
+                long long arrival = (long long)tv.tv_sec * 1000000LL + tv.tv_usec;
+
+                // Lock shared memory to register waiting state safely
+                sem_wait(&shared_data->shm_mutex);
+
+                shared_data->travelers[i].is_waiting = true;
+                shared_data->travelers[i].target_node = msg.current_node;
+                shared_data->travelers[i].arrival_time = arrival;
+                shared_data->travelers[i].next_weight = weight;
+
+                bool can_enter = false;
+                // If the node is completely vacant, this traveler can claim it immediately
+                if (!shared_data->node_occupied[msg.current_node]) {
+                    shared_data->node_occupied[msg.current_node] = true;
+                    shared_data->travelers[i].is_waiting = false;
+                    can_enter = true;
+                }
+
+                sem_post(&shared_data->shm_mutex);
+
+                // If the node was blocked, sleep on personal semaphore until selected by scheduler
+                if (!can_enter) {
+                    sem_wait(&shared_data->traveler_sems[i]);
+                }
 
                 /* 3. Lock acquired! Tell parent I am inside */
                 msg.state = STATE_AT_NODE;
@@ -202,7 +295,40 @@ int main(int argc, char *argv[]) {
                 usleep(1000000);
 
                 /* 5. Leave the node and unlock it for others */
-                sem_post(node_sems[msg.current_node]);
+                // Lock shared memory to safely evaluate the queue
+                sem_wait(&shared_data->shm_mutex);
+
+                int chosen_idx = -1;
+                long long best_arrival = -1;
+                int best_weight = 999999;
+
+                // Scan for travelers waiting at this specific node
+                for (int j = 0; j < num_travelers; j++) {
+                    if (shared_data->travelers[j].is_waiting && shared_data->travelers[j].target_node == msg.current_node) {
+                        if (scheduler_type == 1) { // FCFS logic: find earliest arrival time
+                            if (chosen_idx == -1 || shared_data->travelers[j].arrival_time < best_arrival) {
+                                best_arrival = shared_data->travelers[j].arrival_time;
+                                chosen_idx = j;
+                            }
+                        } else if (scheduler_type == 2) { // SJF logic: find shortest next edge weight
+                            if (chosen_idx == -1 || shared_data->travelers[j].next_weight < best_weight) {
+                                best_weight = shared_data->travelers[j].next_weight;
+                                chosen_idx = j;
+                            }
+                        }
+                    }
+                }
+
+                if (chosen_idx != -1) {
+                    // Pass the node lock directly to the chosen traveler and wake them up
+                    shared_data->travelers[chosen_idx].is_waiting = false;
+                    sem_post(&shared_data->traveler_sems[chosen_idx]);
+                } else {
+                    // No concurrent workers waiting, set node status to vacant
+                    shared_data->node_occupied[msg.current_node] = false;
+                }
+
+                sem_post(&shared_data->shm_mutex);
 
                 /* 6. If not destination, travel to the next node */
                 if (msg.next_node != -1) {
