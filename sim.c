@@ -125,7 +125,9 @@ int main(int argc, char *argv[]) {
         scheduler_type = 1;
     } else if (strcmp(argv[2], "sjf") == 0) {
         scheduler_type = 2;
-    } else {
+    } else if (strcmp(arg[2], "priority")==0){
+        scheduler_type = 3;
+ else {
         fprintf(stderr, "Error: Invalid scheduler type. Use 'fcfs' or 'sjf'.\n");
         return 1;
     }
@@ -303,6 +305,7 @@ int main(int argc, char *argv[]) {
                 int chosen_idx = -1;
                 long long best_arrival = -1;
                 int best_weight = 999999;
+                pid_t best_pid=999999;
 
                 // Scan for travelers waiting at this specific node
                 for (int j = 0; j < num_travelers; j++) {
@@ -318,8 +321,14 @@ int main(int argc, char *argv[]) {
                                 chosen_idx = j;
                             }
                         }
-                    }
+                          else if (scheduler_type ==3) {
+                            if(chosen_idx==1 || scheduler_data->travelers[j].pid<best_pid){
+                               best_pid=shared_data->travelers[j].pid;
+                               chosen_id=j;
+                      } 
+                   }
                 }
+             }
 
                 if (chosen_idx != -1) {
                     // Pass the node lock directly to the chosen traveler and wake them up
@@ -565,7 +574,7 @@ int main(int argc, char *argv[]) {
                 DrawCircleLines((int)travelers[i].visual_pos.x, (int)travelers[i].visual_pos.y, 15, BLACK);
 
                 /* Draw a visual warning icon "!" if waiting */
-                if (travelers[i].animState == STATE_WAITING_AT_NODE) {
+              if (travelers[i].animState == STATE_WAITING_AT_NODE) {
                 DrawText("!", (int)travelers[i].visual_pos.x - 3, (int)travelers[i].visual_pos.y - 10, 20, RED);
                 }
             }
@@ -580,7 +589,11 @@ int main(int argc, char *argv[]) {
         DrawText(btnText, playBtn.x + (playBtn.width - btnTextWidth) / 2, playBtn.y + 10, 20, BLACK);
 
         // Display the currently active scheduler mode on screen
-        const char* modeText = (scheduler_type == 1) ? "Scheduler: FCFS" : "Scheduler: SJF";
+        const char* modeText = (scheduler_type == 1) modeText= "Scheduler: Unknown";
+        if(scheduler_type==1) modeText="Scheduler :FCFS"
+        if(scheduler_type==2) modeText="Scheduler :SJF"
+        if(scheduler_type==2) modeText="Scheduler :Priority"
+
         DrawText(modeText, 20, 75, 20, DARKGRAY);
 
         // Render destination message upon completion of ALL active travelers
